@@ -24,4 +24,6 @@ export interface GitLabIssue {
     full: string; // e.g., "group/project#123"
   };
   project_id?: number;
+  // Start date from GraphQL WorkItemWidgetStartAndDueDate (fetched separately)
+  startDate?: string;
 }

@@ -11,6 +11,7 @@ import {
   getPaginationFromGitLabHeaders,
 } from '../../../sources/gitlab/helpers';
 import { enrichTasksWithHierarchy } from '../../../sources/gitlab/helpers-hierarchy';
+import { gitLabStartDateService } from '../../../sources/gitlab/GitLabStartDateService';
 
 export class ViewProjectGitLabStrategy
   implements ViewSourceStrategy<PaginatedListOfTasks> {
@@ -33,6 +34,39 @@ export class ViewProjectGitLabStrategy
         },
       },
     );
+
+    // Fetch start dates via GraphQL
+    const projectPath = configuration.project.path as string;
+    const iids = data
+      .filter((issue) => issue.iid !== undefined)
+      .map((issue) => String(issue.iid));
+
+    console.log(`\n=== ViewProjectGitLabStrategy: Fetching start dates ===`);
+    console.log(`Project: ${projectPath}`);
+    console.log(`Issues to fetch: ${iids.length}`);
+
+    const startDatesMap = await gitLabStartDateService.batchFetchStartDates(
+      source,
+      projectPath,
+      iids,
+    );
+
+    console.log(`Start dates map size: ${startDatesMap.size}`);
+
+    // Map start dates back to issues
+    for (const gitlabIssue of data) {
+      if (gitlabIssue.iid) {
+        const iid = String(gitlabIssue.iid);
+        const startDate = startDatesMap.get(iid);
+        if (startDate) {
+          gitlabIssue.startDate = startDate;
+          console.log(`  ✓ Assigned startDate "${startDate}" to issue #${iid}`);
+        } else {
+          console.log(`  ✗ No startDate found for issue #${iid}`);
+        }
+      }
+    }
+
     const tasksList: Array<Task> = [];
     for (const gitlabIssue of data) {
       const task = getTaskFromGitLabIssue(gitlabIssue);
