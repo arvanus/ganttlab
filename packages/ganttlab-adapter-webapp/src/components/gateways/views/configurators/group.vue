@@ -47,9 +47,7 @@
             <Icon size="32" name="folder-outline" />
           </div>
           <p class="flex-shrink truncate">
-            <span class="font-bold">{{
-              slotProps.result.full_path
-            }}</span>
+            <span class="font-bold">{{ slotProps.result.full_path }}</span>
             <br />
             <span class="text-sm">{{ slotProps.result.description }}</span>
           </p>
@@ -120,10 +118,7 @@ export default class GroupViewConfigurator extends Vue {
   }
 
   setGroup(group: GitLabGroup) {
-    if (
-      this.group &&
-      this.group.full_path === group.full_path
-    ) {
+    if (this.group && this.group.full_path === group.full_path) {
       // same? do nothing!
       return;
     }

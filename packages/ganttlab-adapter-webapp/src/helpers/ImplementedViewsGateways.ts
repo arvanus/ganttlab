@@ -1,6 +1,7 @@
 import { Configuration, SourceVisitor } from 'ganttlab-entities';
 import {
   ViewMine,
+  ViewAssignedToMe,
   ViewProject,
   ViewGroup,
   ViewRepository,
@@ -20,6 +21,17 @@ export const ImplementedViewsGateways: Array<ViewGateway> = [
     slug: 'mine',
     icon: 'person',
     instance: new ViewMine(),
+    defaultConfiguration: {
+      tasks: {
+        page: 1,
+        pageSize: 50,
+      },
+    },
+  },
+  {
+    slug: 'assigned',
+    icon: 'person-circle-outline',
+    instance: new ViewAssignedToMe(),
     defaultConfiguration: {
       tasks: {
         page: 1,

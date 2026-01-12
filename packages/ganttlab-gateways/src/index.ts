@@ -8,6 +8,7 @@ export * from './sources/gitlab/types/GitLabProject';
 export * from './sources/gitlab/types/GitLabGroup';
 export * from './sources/gitlab/types/GitLabUser';
 export * from './views/mine/ViewMine';
+export * from './views/assigned/ViewAssignedToMe';
 export * from './views/project/ViewProject';
 export * from './views/group/ViewGroup';
 export * from './views/repository/ViewRepository';
