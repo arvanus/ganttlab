@@ -227,6 +227,7 @@ import {
   PaginatedListOfTasks,
   PaginatedListOfMilestones,
   Project,
+  Task,
   Group,
 } from 'ganttlab-entities';
 import { ImplementedSourcesGateways } from '../helpers/ImplementedSourcesGateways';
