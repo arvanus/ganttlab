@@ -14,7 +14,9 @@ import {
   getPaginationFromGitLabHeaders,
   getMilestoneFromGitLabMilestone,
 } from '../../../sources/gitlab/helpers';
+import { enrichTasksWithHierarchy } from '../../../sources/gitlab/helpers-hierarchy';
 import { TasksAndMilestones } from 'ganttlab-use-cases';
+import { gitLabStartDateService } from '../../../sources/gitlab/GitLabStartDateService';
 
 export class ViewMilestoneGitLabStrategy
   implements ViewSourceStrategy<TasksAndMilestones> {
@@ -62,11 +64,42 @@ export class ViewMilestoneGitLabStrategy
             milestone: milestone.name,
           },
         });
+
+        // Fetch start dates via GraphQL
+        const projectPath = configuration.project.path as string;
+        const iids = data
+          .filter((issue) => issue.iid !== undefined)
+          .map((issue) => String(issue.iid));
+        const startDatesMap = await gitLabStartDateService.batchFetchStartDates(
+          source,
+          projectPath,
+          iids,
+        );
+
+        // Map start dates back to issues
+        for (const gitlabIssue of data) {
+          if (gitlabIssue.iid) {
+            const iid = String(gitlabIssue.iid);
+            const startDate = startDatesMap.get(iid);
+            if (startDate) {
+              gitlabIssue.startDate = startDate;
+            }
+          }
+        }
+
         const tasksList: Array<Task> = [];
         for (const gitlabIssue of data) {
           const task = getTaskFromGitLabIssue(gitlabIssue);
           tasksList.push(task);
         }
+
+        // Enrich tasks with parent-child hierarchy information
+        await enrichTasksWithHierarchy(
+          source,
+          configuration.project.path as string,
+          tasksList,
+        );
+
         tasksList.sort((a: Task, b: Task) => {
           if (a.due && b.due) {
             return a.due.getTime() - b.due.getTime();

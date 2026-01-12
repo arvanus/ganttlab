@@ -12,7 +12,7 @@
         @set-page="setTasksPage($event)"
       />
     </div>
-    <TasksChartMediator :tasks="paginatedTasks.list" :chart="chart" />
+    <TasksChartMediator :tasks="paginatedTasks.list" :chart="chart" :metadata="metadata" />
   </div>
 </template>
 
@@ -35,6 +35,11 @@ const defaultChart = 'legacy';
 })
 export default class TasksDisplay extends Vue {
   @Prop() private paginatedTasks!: PaginatedListOfTasks;
+  @Prop({ default: '' }) private metadata!: string;
+
+  mounted() {
+    console.log('📦 TasksDisplay.vue - received metadata:', this.metadata);
+  }
 
   @Emit('set-tasks-page')
   setTasksPage(page: number) {

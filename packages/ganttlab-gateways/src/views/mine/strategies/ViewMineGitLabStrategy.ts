@@ -9,7 +9,9 @@ import { GitLabIssue } from '../../../sources/gitlab/types/GitLabIssue';
 import {
   getTaskFromGitLabIssue,
   getPaginationFromGitLabHeaders,
+  extractProjectPathFromWebUrl,
 } from '../../../sources/gitlab/helpers';
+import { gitLabStartDateService } from '../../../sources/gitlab/GitLabStartDateService';
 
 export class ViewMineGitLabStrategy
   implements ViewSourceStrategy<PaginatedListOfTasks> {
@@ -29,6 +31,45 @@ export class ViewMineGitLabStrategy
         },
       },
     );
+
+    // Group issues by project path and fetch start dates
+    const issuesByProject = new Map<string, GitLabIssue[]>();
+    for (const gitlabIssue of data) {
+      const projectPath = extractProjectPathFromWebUrl(gitlabIssue.web_url);
+      if (projectPath && gitlabIssue.iid) {
+        if (!issuesByProject.has(projectPath)) {
+          issuesByProject.set(projectPath, []);
+        }
+        issuesByProject.get(projectPath)!.push(gitlabIssue);
+      }
+    }
+
+    // Fetch start dates for each project
+    const projectPaths = Array.from(issuesByProject.keys());
+    for (const projectPath of projectPaths) {
+      const issues = issuesByProject.get(projectPath) || [];
+      const iids = issues
+        .filter((issue: GitLabIssue) => issue.iid !== undefined)
+        .map((issue: GitLabIssue) => String(issue.iid));
+      if (iids.length > 0) {
+        const startDatesMap = await gitLabStartDateService.batchFetchStartDates(
+          source,
+          projectPath,
+          iids,
+        );
+        // Map start dates back to issues
+        for (const gitlabIssue of issues) {
+          if (gitlabIssue.iid) {
+            const iid = String(gitlabIssue.iid);
+            const startDate = startDatesMap.get(iid);
+            if (startDate) {
+              gitlabIssue.startDate = startDate;
+            }
+          }
+        }
+      }
+    }
+
     const tasksList: Array<Task> = [];
     for (const gitlabIssue of data) {
       const task = getTaskFromGitLabIssue(gitlabIssue);

@@ -85,6 +85,7 @@ import { DisplayableError } from '../../../helpers/DisplayableError';
 import { addDisplaybleError } from '../../../helpers';
 import { getRememberedViewsBySource } from '../../../helpers/LocalForage';
 import { trackInteractionEvent } from '../../../helpers/GTM';
+import { buildConfigurationFromUrlState } from '../../../helpers/UrlStateParser';
 
 const mainState = getModule(MainModule);
 
@@ -109,6 +110,36 @@ export default class ViewSelector extends Vue {
       return mainState.viewGateway;
     }
     return null;
+  }
+
+  /**
+   * Check if URL state has complete configuration for a view
+   * Different views require different parameters
+   */
+  hasCompleteConfiguration(urlState: any, viewSlug: string): boolean {
+    if (!urlState) return false;
+
+    switch (viewSlug) {
+      case 'project':
+      case 'repository':
+        // Project/repository views require projectId or projectPath
+        return !!(urlState.projectId || urlState.projectPath);
+      
+      case 'assigned-to':
+        // Assigned-to view requires assigneeUsername
+        return !!urlState.assigneeUsername;
+      
+      case 'milestone':
+        // Milestone view requires projectId or projectPath
+        return !!(urlState.projectId || urlState.projectPath);
+      
+      case 'mine':
+        // Mine view doesn't require additional parameters
+        return true;
+      
+      default:
+        return false;
+    }
   }
 
   pickANewView() {
@@ -196,7 +227,41 @@ export default class ViewSelector extends Vue {
       return;
     }
 
-    // if a remembered state allows for pre-setting a view, just do it now!
+    // PRIORITY 1: Check for URL state (takes precedence over localStorage)
+    const urlState = mainState.urlState;
+    if (urlState?.view) {
+      console.log('🔗 URL state detected - using view from URL:', urlState.view);
+      
+      // Find the view from URL
+      const viewGateway = allViews.find(
+        (view: ViewGateway) => view.slug === urlState.view,
+      );
+
+      if (viewGateway) {
+        // Build configuration from URL state
+        const configuration = buildConfigurationFromUrlState(
+          urlState,
+          viewGateway.defaultConfiguration,
+        );
+        
+        // Check if URL state provides complete configuration for this view
+        const hasCompleteConfig = this.hasCompleteConfiguration(urlState, viewGateway.slug);
+        
+        if (hasCompleteConfig) {
+          // URL provides complete config - set view directly without configurator
+          console.log('✅ URL has complete configuration - skipping configurator');
+          this.setView(viewGateway, configuration);
+          trackInteractionEvent('View', 'From URL', viewGateway.slug);
+          return;
+        } else {
+          console.warn(`⚠️ URL state incomplete for view '${urlState.view}' - falling back to remembered/default`);
+        }
+      } else {
+        console.warn(`⚠️ View '${urlState.view}' from URL not found`);
+      }
+    }
+
+    // PRIORITY 2: Check for remembered state (localStorage)
     const latestView = await getRememberedViewsBySource(
       this.sourceGateway.slug,
     );
@@ -210,7 +275,7 @@ export default class ViewSelector extends Vue {
       this.setView(viewGateway, latestView.configuration);
       trackInteractionEvent('View', 'Preset', viewGateway.slug);
     } else {
-      // by default, simply use the first implemented view
+      // PRIORITY 3: Default to first view
       this.setView(this.views[0], this.views[0].defaultConfiguration);
       trackInteractionEvent('View', 'Default', this.views[0].slug);
     }

@@ -5,6 +5,16 @@ interface LegacyTask {
   title: string;
   link: string;
   data: [[string, number, string]] | null;
+  // Tree hierarchy fields
+  depth?: number;
+  hasChildren?: boolean;
+  isExpanded?: boolean;
+  iid?: string;
+  isDimmed?: boolean;
+  // GitLab type indicators
+  isGitLabIssue?: boolean;
+  isGitLabTask?: boolean;
+  isClosed?: boolean;
 }
 
 export function getConvertedTasks(tasks: Array<Task>): Array<LegacyTask> {
@@ -50,6 +60,16 @@ export function getConvertedTasks(tasks: Array<Task>): Array<LegacyTask> {
       title: title,
       link: aTask.url,
       data: [[fStartDate, status, fDueDate]],
+      // Add tree hierarchy information
+      depth: aTask.depth || 0,
+      hasChildren: aTask.hasChildren || false,
+      isExpanded: aTask.isExpanded || false,
+      iid: aTask.iid,
+      isDimmed: aTask.isDimmed || false,
+      // GitLab type indicators
+      isGitLabIssue: aTask.isGitLabIssue || false,
+      isGitLabTask: aTask.isGitLabTask || false,
+      isClosed: aTask.isClosed || false,
     };
 
     // adding the dataset built to the main dataset list

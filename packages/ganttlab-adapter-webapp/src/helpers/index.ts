@@ -19,3 +19,8 @@ export function hashCode(value: string) {
 export function addDisplaybleError(error: DisplayableError) {
   mainState.addError(error);
 }
+
+// Export tree-related utilities
+export * from './TreeBuilder';
+export * from './TreeHierarchyService';
+export * from './IssueFilterHelper';

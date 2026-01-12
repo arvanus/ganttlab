@@ -76,6 +76,11 @@
           </a>
         </div>
         <div class="w-64 flex items-center justify-end">
+          <ShareDropdown
+            class="mr-4"
+            @copy-as-url="handleCopyAsUrl"
+            @copy-as-png="handleCopyAsPng"
+          />
           <a
             class="mr-12 flex items-center img-reset-opacity"
             :href="user.url"
@@ -176,6 +181,7 @@
           <TasksDisplay
             :key="`tasks-${issueFilterTerm}-${issueFilterMode}-${filteredTasksCount}`"
             :paginatedTasks="paginatedTasks"
+            :metadata="chartMetadata"
             @set-tasks-page="setTasksPage($event)"
           />
           <!-- Show message when filter results in no matches -->
@@ -219,6 +225,7 @@ import TasksDisplay from './displays/TasksDisplay.vue';
 import MilestonesDisplay from './displays/MilestonesDisplay.vue';
 import NoData from './gateways/views/NoData.vue';
 import IssueFilter from './generic/IssueFilter.vue';
+import ShareDropdown from './generic/ShareDropdown.vue';
 import {
   User,
   Source,
@@ -240,7 +247,40 @@ import LocalForage, {
   setRememberedIssueFilter,
 } from '../helpers/LocalForage';
 import { trackVirtualpageView, trackInteractionEvent } from '../helpers/GTM';
-import { filterTasks, FilterResult } from '../helpers/IssueFilterHelper';
+import { FilterResult } from '../helpers/IssueFilterHelper';
+import { TreeBuilder } from '../helpers/TreeBuilder';
+import { treeHierarchyService } from '../helpers/TreeHierarchyService';
+
+// Type declarations for Clipboard API
+declare global {
+  interface Clipboard {
+    write(items: ClipboardItem[]): Promise<void>;
+  }
+  interface ClipboardItem {
+    readonly types: string[];
+    getType(type: string): Promise<Blob>;
+  }
+  interface ClipboardItemConstructor {
+    new (items: Record<string, Blob | Promise<Blob>>): ClipboardItem;
+  }
+  const ClipboardItem: ClipboardItemConstructor;
+}
+
+// Interface for URL state encoding
+interface ShareState {
+  v: number;
+  source?: string;
+  sourceUrl?: string;
+  view?: string;
+  projectId?: string;
+  projectPath?: string;
+  activeMilestone?: number;
+  tasksPage?: number;
+  milestonesPage?: number;
+  filterTerm?: string;
+  filterMode?: 'simple' | 'regex';
+  expanded?: string;
+}
 
 const mainState = getModule(MainModule);
 
@@ -253,6 +293,7 @@ const mainState = getModule(MainModule);
     MilestonesDisplay,
     NoData,
     IssueFilter,
+    ShareDropdown,
   },
 })
 export default class Home extends Vue {
@@ -297,11 +338,13 @@ export default class Home extends Vue {
   }
 
   get originalTasksCount(): number {
-    return this.originalPaginatedTasks?.list.length || 0;
+    // Exclude dimmed items (parent issues not matching the criteria but shown for context)
+    return this.originalPaginatedTasks?.list.filter(t => !t.isDimmed).length || 0;
   }
 
   get filteredTasksCount(): number {
-    return this.paginatedTasks?.list.length || 0;
+    // Exclude dimmed items from filtered count as well
+    return this.paginatedTasks?.list.filter(t => !t.isDimmed).length || 0;
   }
 
   get issueFilterTerm(): string {
@@ -310,6 +353,58 @@ export default class Home extends Vue {
 
   get issueFilterMode(): 'simple' | 'regex' {
     return mainState.issueFilterMode || 'simple';
+  }
+
+  // Build metadata string for chart header
+  get chartMetadata(): string {
+    const metadataParts: string[] = [];
+
+    console.log('🔍 Building chartMetadata...');
+    console.log('  viewGateway:', this.viewGateway?.name);
+    console.log('  project:', this.project?.path);
+
+    // View information
+    if (this.viewGateway) {
+      metadataParts.push(`View: ${this.viewGateway.name}`);
+    }
+
+    // Project
+    if (this.project) {
+      metadataParts.push(`Project: ${this.project.path}`);
+    }
+
+    // Active milestone
+    if (this.activeMilestone !== null && this.paginatedMilestones) {
+      const milestone = this.paginatedMilestones.list[this.activeMilestone];
+      if (milestone) {
+        metadataParts.push(`Milestone: ${milestone.name}`);
+      }
+    }
+
+    // Assignee username (for assigned-to view)
+    if (this.viewGateway?.configuration?.assigneeUsername) {
+      metadataParts.push(`Assigned to: ${this.viewGateway.configuration.assigneeUsername}`);
+    }
+
+    // Filter
+    if (this.issueFilterTerm) {
+      const filterModeLabel = this.issueFilterMode === 'regex' ? ' (regex)' : '';
+      metadataParts.push(`Filter: "${this.issueFilterTerm}"${filterModeLabel}`);
+    }
+
+    // Task count
+    if (this.originalTasksCount > 0) {
+      if (this.issueFilterTerm) {
+        metadataParts.push(`${this.filteredTasksCount}/${this.originalTasksCount} issues`);
+      } else {
+        metadataParts.push(`${this.originalTasksCount} issues`);
+      }
+    }
+
+    const result = metadataParts.join(' • ');
+    console.log('✅ chartMetadata result:', result);
+    console.log('   length:', result.length);
+    return result;
   }
 
   // source gateway is stored in vuex store
@@ -460,11 +555,79 @@ export default class Home extends Vue {
       return;
     }
 
-    const filterResult = filterTasks(
-      this.originalPaginatedTasks.list,
-      this.issueFilterTerm,
-      this.issueFilterMode,
+    console.log('=== applyIssueFilter START ===');
+    console.log(
+      'Original tasks count:',
+      this.originalPaginatedTasks.list.length,
     );
+
+    // Work with a shallow copy of tasks to avoid mutation issues
+    // This ensures we don't accidentally modify the original task objects
+    const tasksCopy = this.originalPaginatedTasks.list.map((t) => ({ ...t }));
+
+    console.log('\n📋 All tasks before tree building:');
+    tasksCopy.forEach((t) => {
+      const type = t.isGitLabTask ? 'TASK' : 'ISSUE';
+      const dimmed = t.isDimmed ? '(DIMMED)' : '';
+      const parent = t.parentIid ? `parent:#${t.parentIid}` : 'no-parent';
+      console.log(`  ${type} #${t.iid}: "${t.title}" ${dimmed} [${parent}]`);
+    });
+
+    // Apply expansion state to tasks
+    TreeBuilder.applyExpansionState(tasksCopy);
+
+    // Build tree structure - links children to parents and returns only roots
+    const rootTasks = TreeBuilder.buildTree(tasksCopy);
+    console.log('\n🌳 Root tasks after buildTree:', rootTasks.length);
+    rootTasks.forEach((t) => {
+      const type = t.isGitLabTask ? 'TASK' : 'ISSUE';
+      const dimmed = t.isDimmed ? '(DIMMED)' : '';
+      const hasKids = t.hasChildren ? `[${t.children?.length || 0} children]` : '[no children]';
+      const expanded = t.isExpanded ? 'EXPANDED' : 'collapsed';
+      console.log(`  ${type} #${t.iid}: "${t.title}" ${dimmed} ${hasKids} ${expanded}`);
+      if (t.children) {
+        t.children.forEach((c) => {
+          console.log(`    └─ CHILD #${c.iid}: "${c.title}"`);
+        });
+      }
+    });
+
+    // Use tree-aware filtering if feature is enabled
+    const useTreeFiltering = mainState.issueHierarchyEnabled !== false; // default to true
+
+    let filteredRootTasks: Task[];
+    if (useTreeFiltering && this.issueFilterTerm) {
+      // Tree-aware filtering on root tasks (BEFORE determining visibility)
+      // This ensures we can find children that match even if parent is collapsed
+      filteredRootTasks = TreeBuilder.filterTree(
+        rootTasks,
+        this.issueFilterTerm,
+        this.issueFilterMode,
+      );
+      console.log('Filtered root tasks:', filteredRootTasks.length);
+    } else {
+      // No filter - use all root tasks
+      filteredRootTasks = rootTasks;
+    }
+
+    // Get visible tasks based on expansion state (includes expanded children)
+    const visibleTasks = TreeBuilder.getVisibleTasks(filteredRootTasks);
+    console.log('\n👁️ Visible tasks (what you see):', visibleTasks.length);
+    visibleTasks.forEach((t) => {
+      const type = t.isGitLabTask ? 'TASK' : 'ISSUE';
+      const dimmed = t.isDimmed ? '(DIMMED)' : '';
+      const depth = '  '.repeat(t.depth || 0);
+      console.log(`  ${depth}${type} #${t.iid}: "${t.title}" ${dimmed}`);
+    });
+
+    const filterResult: FilterResult = {
+      filteredTasks: visibleTasks,
+      totalCount: visibleTasks.length,
+      visibleCount: visibleTasks.length,
+    };
+
+    console.log('Filtered tasks:', filterResult.filteredTasks.length);
+    console.log('=== applyIssueFilter END ===');
 
     // Create new PaginatedListOfTasks with filtered results
     // Preserve the original pagination metadata but update the list
@@ -479,12 +642,322 @@ export default class Home extends Vue {
     );
   }
 
+  handleToggleExpand(event: CustomEvent) {
+    const { iid } = event.detail;
+    if (!iid) return;
+
+    // Toggle expansion state
+    const isExpanded = treeHierarchyService.toggleExpansion(iid);
+
+    // Find the task and update its expansion state
+    if (this.originalPaginatedTasks) {
+      const task = this.originalPaginatedTasks.list.find((t) => t.iid === iid);
+      if (task) {
+        task.isExpanded = isExpanded;
+
+        // If expanding and children not loaded, fetch them
+        if (isExpanded && !task.children) {
+          this.fetchChildrenForTask(task);
+        } else {
+          // Just re-apply the filter to update visibility
+          this.applyIssueFilter();
+        }
+      }
+    }
+
+    // Track analytics
+    trackInteractionEvent('Tree', isExpanded ? 'Expand' : 'Collapse', iid);
+  }
+
+  handleToggleExpandAll(event: CustomEvent) {
+    const { expandAll } = event.detail;
+
+    if (!this.originalPaginatedTasks) return;
+
+    if (expandAll) {
+      // Expand all tasks that have children
+      treeHierarchyService.expandAll(this.originalPaginatedTasks.list);
+
+      // Update expansion state on all tasks
+      this.originalPaginatedTasks.list.forEach((task) => {
+        if (task.hasChildren) {
+          task.isExpanded = true;
+        }
+      });
+    } else {
+      // Collapse all tasks
+      treeHierarchyService.collapseAll(this.originalPaginatedTasks.list);
+
+      // Update expansion state on all tasks
+      this.originalPaginatedTasks.list.forEach((task) => {
+        task.isExpanded = false;
+      });
+    }
+
+    // Re-apply the filter to update visibility
+    this.applyIssueFilter();
+
+    // Track analytics
+    trackInteractionEvent(
+      'Tree',
+      expandAll ? 'Expand All' : 'Collapse All',
+      undefined,
+    );
+  }
+
+  async fetchChildrenForTask(task: Task) {
+    // TODO: Implement child fetching via GitLab API
+    // For now, we'll just use cached children if available
+    TreeBuilder.loadCachedChildren(task);
+    this.applyIssueFilter();
+  }
+
   async mounted() {
-    // Restore filter state from session storage
-    const rememberedFilter = await getRememberedIssueFilter();
-    if (rememberedFilter) {
-      mainState.setIssueFilterTerm(rememberedFilter.term);
-      mainState.setIssueFilterMode(rememberedFilter.mode);
+    // Check for state in URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+
+    // Check if we have any share parameters
+    const hasShareParams =
+      urlParams.has('filter') ||
+      urlParams.has('expanded') ||
+      urlParams.has('project') ||
+      urlParams.has('view');
+
+    if (hasShareParams) {
+      try {
+        // Restore filter state
+        const filterTerm = urlParams.get('filter');
+        if (filterTerm) {
+          mainState.setIssueFilterTerm(filterTerm);
+        }
+
+        const filterMode = urlParams.get('filterMode');
+        if (filterMode === 'regex' || filterMode === 'simple') {
+          mainState.setIssueFilterMode(filterMode);
+        }
+
+        // Restore expansion state
+        const expanded = urlParams.get('expanded');
+        if (expanded) {
+          const expandedIds = expanded.split(',');
+          expandedIds.forEach((iid: string) => {
+            if (iid.trim()) {
+              treeHierarchyService.expand(iid.trim());
+            }
+          });
+        }
+
+        // Log additional parameters for debugging
+        // Note: Source, view, and project need to be handled by the authentication/view selection flow
+        const source = urlParams.get('source');
+        const view = urlParams.get('view');
+        const project = urlParams.get('project');
+
+        if (source || view || project) {
+          console.log('URL contains state:', {
+            source,
+            view,
+            project,
+            sourceUrl: urlParams.get('sourceUrl'),
+            projectId: urlParams.get('projectId'),
+            milestone: urlParams.get('milestone'),
+            tasksPage: urlParams.get('tasksPage'),
+            milestonesPage: urlParams.get('milestonesPage'),
+          });
+          // You could store this in vuex to be picked up by the view selector
+        }
+      } catch (error) {
+        console.error('Failed to restore state from URL:', error);
+      }
+    } else {
+      // No URL state, restore from session storage
+      const rememberedFilter = await getRememberedIssueFilter();
+      if (rememberedFilter) {
+        mainState.setIssueFilterTerm(rememberedFilter.term);
+        mainState.setIssueFilterMode(rememberedFilter.mode);
+      }
+    }
+
+    // Listen for tree expand/collapse events
+    document.addEventListener(
+      'toggle-expand',
+      this.handleToggleExpand as EventListener,
+    );
+    document.addEventListener(
+      'toggle-expand-all',
+      this.handleToggleExpandAll as EventListener,
+    );
+  }
+
+  beforeDestroy() {
+    // Clean up event listener
+    document.removeEventListener(
+      'toggle-expand',
+      this.handleToggleExpand as EventListener,
+    );
+    document.removeEventListener(
+      'toggle-expand-all',
+      this.handleToggleExpandAll as EventListener,
+    );
+  }
+
+  async handleCopyAsUrl() {
+    try {
+      // Build URL with readable query parameters
+      const params = new URLSearchParams();
+
+      // Source information
+      if (this.sourceGateway) {
+        params.set('source', this.sourceGateway.slug);
+        if (this.sourceGateway instanceof AuthenticatableSource) {
+          const url = this.sourceGateway.getUrl();
+          if (url) {
+            params.set('sourceUrl', url);
+          }
+        }
+      }
+
+      // View information
+      if (this.viewGateway) {
+        params.set('view', this.viewGateway.slug);
+
+        // View configuration
+        if (this.viewGateway.configuration) {
+          const config = this.viewGateway.configuration;
+
+          // Project
+          if (config.project) {
+            if (config.project.id) {
+              params.set('projectId', config.project.id);
+            }
+            if (config.project.path) {
+              params.set('project', config.project.path);
+            }
+          }
+
+          // Active milestone
+          if (config.activeMilestone !== undefined) {
+            params.set('milestone', config.activeMilestone.toString());
+          }
+
+          // Assignee username (for assigned-to view)
+          if (config.assigneeUsername) {
+            params.set('assigneeUsername', config.assigneeUsername);
+          }
+
+          // Task and milestone pages
+          if (config.tasks?.page) {
+            params.set('tasksPage', config.tasks.page.toString());
+          }
+          if (config.milestones?.page) {
+            params.set('milestonesPage', config.milestones.page.toString());
+          }
+        }
+      }
+
+      // Filter state
+      if (this.issueFilterTerm) {
+        params.set('filter', this.issueFilterTerm);
+      }
+      if (this.issueFilterMode !== 'simple') {
+        params.set('filterMode', this.issueFilterMode);
+      }
+
+      // Expansion state - only include if there are expanded items
+      const expandedIds = treeHierarchyService.getExpandedIds();
+      if (expandedIds.length > 0) {
+        params.set('expanded', expandedIds.join(','));
+      }
+
+      // Build full URL
+      const baseUrl = window.location.origin + window.location.pathname;
+      const shareUrl = `${baseUrl}?${params.toString()}`;
+
+      // Copy to clipboard
+      await navigator.clipboard.writeText(shareUrl);
+
+      // Show success message (you can add a toast notification here)
+      console.log('URL copied to clipboard:', shareUrl);
+      alert('URL copied to clipboard! You can now share this link.');
+
+      trackInteractionEvent('Share', 'Copy as URL');
+    } catch (error) {
+      console.error('Failed to copy URL:', error);
+      alert('Failed to copy URL. Please try again.');
+    }
+  }
+
+  async handleCopyAsPng() {
+    try {
+      // Dynamically import html2canvas
+      const html2canvas = (await import('html2canvas')).default;
+
+      const chartElement = document.getElementById('legacyChart');
+      if (!chartElement) {
+        alert('Chart not found. Please ensure the chart is visible.');
+        return;
+      }
+
+      // Hide expand/collapse button before capturing
+      const expandButtons = chartElement.querySelectorAll('.expand-all-button');
+      const originalDisplay: string[] = [];
+      expandButtons.forEach((button, index) => {
+        const element = button as HTMLElement;
+        originalDisplay[index] = element.style.display;
+        element.style.display = 'none';
+      });
+
+      // Capture the chart (metadata is already visible at the top)
+      const canvas = await html2canvas(chartElement, {
+        backgroundColor: '#ffffff',
+        scale: 2, // Higher quality
+        logging: false,
+      });
+
+      // Cleanup: Restore expand/collapse button
+      expandButtons.forEach((button, index) => {
+        const element = button as HTMLElement;
+        element.style.display = originalDisplay[index];
+      });
+
+      // Convert canvas to blob
+      canvas.toBlob(async (blob) => {
+        if (blob) {
+          try {
+            // Try to copy to clipboard using Clipboard API if available
+            if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+              await navigator.clipboard.write([
+                new ClipboardItem({
+                  'image/png': blob,
+                }),
+              ]);
+
+              console.log('Chart image copied to clipboard');
+              alert('Chart copied as image to clipboard!');
+
+              trackInteractionEvent('Share', 'Copy as PNG');
+            } else {
+              // Fallback: download the image
+              throw new Error('Clipboard API not available');
+            }
+          } catch (clipboardError) {
+            console.error('Failed to copy to clipboard:', clipboardError);
+            // Fallback: download the image
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `ganttlab-chart-${Date.now()}.png`;
+            link.click();
+            URL.revokeObjectURL(url);
+            alert('Unable to copy to clipboard. Image downloaded instead.');
+
+            trackInteractionEvent('Share', 'Download PNG');
+          }
+        }
+      }, 'image/png');
+    } catch (error) {
+      console.error('Failed to capture chart:', error);
+      alert('Failed to capture chart. Please try again.');
     }
   }
 

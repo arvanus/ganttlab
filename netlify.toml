@@ -1,21 +1,52 @@
 # Netlify configuration for GanttLab monorepo
+# Optimized for fast builds and reliable deployments
 
 [build]
   # Run everything from the repo root so the root package.json scripts are available
   base = "."
   # Builds the Vue webapp located in packages/ganttlab-adapter-webapp
+  # The postinstall script automatically builds all library dependencies
   command = "npm run build:webapp"
   # Directory to publish (the Vue CLI dist folder)
   publish = "packages/ganttlab-adapter-webapp/dist"
 
 [build.environment]
-  # Force Netlify to use Node 16 LTS for the build
+  # Use Node 16 LTS - avoids OpenSSL issues with newer Node versions
+  # Node 16 doesn't require --openssl-legacy-provider flag
   NODE_VERSION = "16"
-  # Ensure NPM installs even when peer-dependency conflicts arise (this project needs it)
+  # Required for dependency installation due to peer dependency conflicts
   NPM_FLAGS = "--legacy-peer-deps"
+  # CI flag prevents interactive prompts during build
+  CI = "true"
 
-# Handle client-side routing for the SPA
+# Handle client-side routing for the Vue SPA
+# All routes should serve index.html for proper Vue Router functionality
 [[redirects]]
   from = "/*"
   to = "/index.html"
-  status = 200 
+  status = 200
+
+# Security headers for better protection
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Cache static assets aggressively
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/css/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/images/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable" 

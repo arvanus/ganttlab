@@ -6,9 +6,9 @@ import {
   Credentials,
   AuthenticatableSource,
   SourceVisitor,
-  Task,
 } from 'ganttlab-entities';
 import { DisplayableError } from '../../helpers/DisplayableError';
+import { UrlState } from '../../helpers/UrlStateParser';
 
 @Module({
   dynamic: true,
@@ -32,9 +32,20 @@ export default class MainModule extends VuexModule {
   public issueFilterTerm = '';
   public issueFilterMode: 'simple' | 'regex' = 'simple';
 
+  // Issue Hierarchy State
+  public issueHierarchyEnabled = true;
+
+  // URL State (from URL parameters, takes precedence over localStorage)
+  public urlState: UrlState | null = null;
+
   @Mutation
   public setRemember(remember: boolean) {
     this.remember = remember;
+  }
+
+  @Mutation
+  public setUrlState(urlState: UrlState | null) {
+    this.urlState = urlState;
   }
 
   @Mutation
@@ -136,6 +147,11 @@ export default class MainModule extends VuexModule {
   @Mutation
   public setIssueFilterMode(mode: 'simple' | 'regex') {
     this.issueFilterMode = mode;
+  }
+
+  @Mutation
+  public setIssueHierarchyEnabled(enabled: boolean) {
+    this.issueHierarchyEnabled = enabled;
   }
 
   @Action({ commit: 'setCredentialsBySource' })

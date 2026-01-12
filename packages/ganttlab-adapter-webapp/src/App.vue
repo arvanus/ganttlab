@@ -37,6 +37,7 @@ import LocalForage, {
 import { getBySlug } from './helpers/ImplementedSourcesGateways';
 import { SignIn } from './helpers/SignIn';
 import { trackInteractionEvent } from './helpers/GTM';
+import { parseUrlState } from './helpers/UrlStateParser';
 
 const mainState = getModule(MainModule);
 
@@ -73,33 +74,91 @@ export default class App extends Vue {
       return;
     }
 
+    // PRIORITY 1: Check for URL state (takes precedence over localStorage)
+    const urlState = parseUrlState();
+    if (urlState) {
+      console.log('🔗 URL state detected - will use URL parameters instead of localStorage');
+      mainState.setUrlState(urlState);
+    }
+
     // when mounted, fill vuex store with remembered data
     mainState.setCredentialsBySource(await getRememberedCredentials());
     mainState.setRemember(await LocalForage.getItem('remember'));
 
-    // if a remembered state allows for logging in, just do it now!
-    const latestSource = await getRememberedSource();
-    if (mainState.remember && latestSource) {
+    // Determine which source to use for authentication
+    // Priority: remembered source (if remember=true) > URL source
+    // URL state is ONLY for display configuration, NOT authentication
+    let sourceToUse: string | null = null;
+    let authSource: 'remembered' | 'url' | 'none' = 'none';
+
+    // PRIORITY 1: Check remembered source if remember is enabled
+    if (mainState.remember) {
+      const rememberedSource = await getRememberedSource();
+      if (rememberedSource) {
+        sourceToUse = rememberedSource;
+        authSource = 'remembered';
+        console.log('💾 Using remembered source for auth:', sourceToUse);
+      }
+    }
+
+    // PRIORITY 2: If no remembered source, check URL source
+    if (!sourceToUse && urlState?.source) {
+      sourceToUse = urlState.source;
+      authSource = 'url';
+      console.log('🔗 Using source from URL (no remembered source):', sourceToUse);
+    }
+
+    // Attempt auto-login if we have a source and credentials
+    if (sourceToUse && authSource !== 'none') {
       const credentials: Credentials | null = mainState.getSourceCredentials(
-        latestSource,
+        sourceToUse,
       );
+      
       if (credentials) {
-        const sourceGateway = getBySlug(latestSource);
+        const sourceGateway = getBySlug(sourceToUse);
         if (sourceGateway) {
           if (sourceGateway instanceof AuthenticatableSource) {
+            // Validate sourceUrl only if it's explicitly provided in URL AND different from credentials
+            // This prevents unnecessary re-authentication when URL changes other parameters
+            if (urlState?.sourceUrl) {
+              const credentialUrl = sourceGateway.getUrl();
+              if (credentialUrl && credentialUrl !== urlState.sourceUrl) {
+                console.log('⚠️ Source URL from URL does not match credentials');
+                console.log('  Credential URL:', credentialUrl);
+                console.log('  URL parameter:', urlState.sourceUrl);
+                console.log('  Skipping auto-login - user needs to authenticate with correct source');
+                this.bypassWelcome = false;
+                return;
+              }
+            }
+            
+            // Auto-login with remembered or URL source
             await SignIn(sourceGateway, credentials);
+            trackInteractionEvent(
+              'Authentication',
+              authSource === 'url' ? 'Bypassed Welcome (URL)' : 'Bypassed Welcome',
+              sourceGateway.slug,
+            );
+            this.bypassWelcome = false;
           } else {
             mainState.setSourceGateway(sourceGateway);
+            trackInteractionEvent(
+              'Authentication',
+              authSource === 'url' ? 'Bypassed Welcome (URL)' : 'Bypassed Welcome',
+              sourceGateway.slug,
+            );
+            this.bypassWelcome = false;
           }
-          trackInteractionEvent(
-            'Authentication',
-            'Bypassed Welcome',
-            sourceGateway.slug,
-          );
+        } else {
+          console.log('⚠️ Source gateway not found:', sourceToUse);
           this.bypassWelcome = false;
         }
+      } else {
+        console.log('⚠️ No credentials found for source:', sourceToUse);
+        this.bypassWelcome = false;
       }
     } else {
+      console.log('ℹ️ No source to use for auto-login');
       this.bypassWelcome = false;
     }
   }

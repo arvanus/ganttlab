@@ -15,10 +15,27 @@ export default {
       convertedTasks: [],
     };
   },
-  props: ['tasks'],
+  props: {
+    tasks: {
+      type: Array,
+      required: true,
+    },
+    searchTerm: {
+      type: String,
+      default: '',
+    },
+    searchMode: {
+      type: String,
+      default: 'simple',
+    },
+    metadata: {
+      type: String,
+      default: '',
+    },
+  },
   watch: {
     tasks: {
-      handler: function (newTasks, oldTasks) {
+      handler: function () {
         // Always refresh the chart when tasks change, even if empty
         // This ensures proper clearing when filter results in no matches
         this.refreshChart();
@@ -26,14 +43,44 @@ export default {
       immediate: false,
       deep: false,
     },
+    metadata: {
+      handler: function (newVal) {
+        console.log('🔄 Metadata prop changed (newVal):', newVal);
+        console.log('🔄 this.metadata in watcher:', this.metadata);
+        console.log('🔄 this.$props.metadata in watcher:', this.$props.metadata);
+        // Redraw chart when metadata changes
+        if (this.tasks && this.tasks.length > 0) {
+          this.refreshChart();
+        }
+      },
+      immediate: true,
+    },
   },
   methods: {
+    matchesSearch: function (title, searchTerm, mode) {
+      if (!searchTerm || !searchTerm.trim()) return false;
+
+      try {
+        if (mode === 'simple') {
+          return title.toLowerCase().includes(searchTerm.toLowerCase());
+        } else {
+          const regex = new RegExp(searchTerm, 'i');
+          return regex.test(title);
+        }
+      } catch {
+        return false;
+      }
+    },
     // thank you Florian Roscheck for this, you made an awesome work I only needed to tweak a little
     visavailChart: function () {
+      // Capture metadata in closure before chart function is defined
+      const metadata = this.metadata || this.$props.metadata || '';
+      console.log('🎨 visavailChart() - captured metadata:', metadata);
+      
       // define chart layout
       const margin = {
         // top margin includes title and legend
-        top: 70,
+        top: 85,
 
         // right margin should provide space for last horz. axis title
         right: 40,
@@ -50,8 +97,8 @@ export default {
       // spacing between horizontal data bars
       const lineSpacing = 14;
 
-      // vertical space for heading
-      const paddingTopHeading = -50;
+      // vertical space for heading (increased to accommodate two-line header)
+      const paddingTopHeading = -65;
 
       // vertical overhang of vertical grid lines on bottom
       const paddingBottom = 10;
@@ -264,27 +311,155 @@ export default {
           svg.append('g').attr('id', 'g_axis');
           svg.append('g').attr('id', 'g_data');
 
-          // create y axis labels
-          svg
+          // create y axis labels with tree structure
+          const labelGroups = svg
             .select('#g_axis')
-            .selectAll('text')
+            .selectAll('g.label-group')
             .data(dataset.slice(startSet, endSet))
             .enter()
-            .append('a')
-            .attr('xlink:href', function (d) {
-              return d.link;
-            })
-            .attr('xlink:show', 'new')
-            .append('text')
-            .attr('x', paddingLeft)
-            .attr('y', lineSpacing + dataHeight / 2)
-            .text(function (d) {
-              return d.title;
-            })
+            .append('g')
+            .attr('class', 'label-group')
             .attr('transform', function (d, i) {
               return 'translate(0,' + (lineSpacing + dataHeight) * i + ')';
+            });
+
+          // Add vertical tree guidelines
+          labelGroups
+            .filter(function (d) {
+              return d.depth && d.depth > 0;
             })
-            .attr('class', 'ytitle');
+            .append('line')
+            .attr('class', 'tree-guideline')
+            .attr('x1', function (d) {
+              return paddingLeft + (d.depth - 1) * 16;
+            })
+            .attr('y1', -(lineSpacing + dataHeight) / 2)
+            .attr('x2', function (d) {
+              return paddingLeft + (d.depth - 1) * 16;
+            })
+            .attr('y2', lineSpacing + dataHeight / 2)
+            .attr('stroke', 'var(--color-border-muted, #d1d5db)')
+            .attr('stroke-width', 1);
+
+          // Add horizontal connector for children
+          labelGroups
+            .filter(function (d) {
+              return d.depth && d.depth > 0;
+            })
+            .append('line')
+            .attr('class', 'tree-connector')
+            .attr('x1', function (d) {
+              return paddingLeft + (d.depth - 1) * 16;
+            })
+            .attr('y1', lineSpacing + dataHeight / 2)
+            .attr('x2', function (d) {
+              return paddingLeft + d.depth * 16 - 4;
+            })
+            .attr('y2', lineSpacing + dataHeight / 2)
+            .attr('stroke', 'var(--color-border-muted, #d1d5db)')
+            .attr('stroke-width', 1);
+
+          // Add expand/collapse toggle button for items with children
+          labelGroups
+            .filter(function (d) {
+              return d.hasChildren;
+            })
+            .append('text')
+            .attr('class', 'tree-toggle')
+            .attr('x', function (d) {
+              return paddingLeft + d.depth * 16;
+            })
+            .attr('y', lineSpacing + dataHeight / 2 + 4)
+            .text(function (d) {
+              return d.isExpanded ? '−' : '+';
+            })
+            .attr('fill', '#6b7280')
+            .attr('font-size', '16px')
+            .attr('font-weight', 'bold')
+            .attr('cursor', 'pointer')
+            .attr('data-iid', function (d) {
+              return d.iid || '';
+            })
+            .on('click', function (d) {
+              // Emit event to parent component
+              const event = new CustomEvent('toggle-expand', {
+                detail: { iid: d.iid },
+                bubbles: true,
+              });
+              this.dispatchEvent(event);
+            });
+
+          // Add GitLab icon (Issue or Task)
+          labelGroups
+            .append('text')
+            .attr('class', 'gitlab-icon')
+            .attr('x', function (d) {
+              // Position after toggle button (if any) or at start
+              const toggleOffset = d.hasChildren ? 16 : 0;
+              return paddingLeft + d.depth * 16 + toggleOffset;
+            })
+            .attr('y', lineSpacing + dataHeight / 2 + 4)
+            .text(function (d) {
+              // 📋 for Issue (parent), ✓ for Task (child), 📄 for childless issue
+              if (d.isGitLabTask) {
+                return '☑'; // Task/subtask (checkbox)
+              } else if (d.hasChildren) {
+                return '📋'; // Issue with children
+              } else {
+                return '📄'; // Issue without children
+              }
+            })
+            .attr('font-size', '12px');
+
+          // Add closed icon indicator for closed issues/tasks (between type icon and title)
+          labelGroups
+            .filter(function (d) {
+              return d.isClosed === true;
+            })
+            .append('text')
+            .attr('class', 'gitlab-closed-icon')
+            .attr('x', function (d) {
+              // Position after type icon, before title
+              const toggleOffset = d.hasChildren ? 16 : 0;
+              return paddingLeft + d.depth * 16 + toggleOffset + 15; // 15px after type icon
+            })
+            .attr('y', lineSpacing + dataHeight / 2 + 4)
+            .text('🔒') // Closed lock icon
+            .attr('font-size', '10px')
+            .attr('opacity', '0.7')
+            .append('title')
+            .text('Closed issue');
+
+          // Add task titles with indentation
+          labelGroups
+            .append('a')
+            .attr('xlink:href', (d) => d.link)
+            .attr('xlink:show', 'new')
+            .append('text')
+            .attr('x', (d) => {
+              // Position: depth indent + toggle (if children) + icon + closed icon (if present) + spacing
+              const toggleOffset = d.hasChildren ? 16 : 0;
+              const iconOffset = 18; // Space for the type icon
+              const closedIconOffset = d.isClosed ? 12 : 0; // Extra space if closed icon present
+              return paddingLeft + d.depth * 16 + toggleOffset + iconOffset + closedIconOffset;
+            })
+            .attr('y', lineSpacing + dataHeight / 2)
+            .text((d) => d.title)
+            .attr('class', (d) => {
+              // Add highlight class if text matches the search term
+              let className = d.isDimmed ? 'ytitle ytitle-dimmed' : 'ytitle';
+              if (this.searchTerm && this.searchTerm.trim()) {
+                const matches = this.matchesSearch(
+                  d.title,
+                  this.searchTerm,
+                  this.searchMode,
+                );
+                if (matches) {
+                  className += ' ytitle-highlighted';
+                }
+              }
+              return className;
+            });
 
           // create vertical grid
           svg
@@ -357,23 +532,36 @@ export default {
           // add data series
           g.selectAll('rect')
             .data(function (d) {
-              return d.dispData;
+              // Attach parent isDimmed property to each bar data point
+              return d.dispData.map(function (barData) {
+                return {
+                  barData: barData,
+                  isDimmed: d.isDimmed
+                };
+              });
             })
             .enter()
             .append('rect')
             .attr('x', function (d) {
-              return xScale(d[0]);
+              return xScale(d.barData[0]);
             })
             .attr('y', lineSpacing)
             .attr('width', function (d) {
-              return xScale(d[2]) - xScale(d[0]);
+              return xScale(d.barData[2]) - xScale(d.barData[0]);
             })
             .attr('height', dataHeight)
             .attr('class', function (d) {
-              if (d[1] === 1) {
-                return 'rect_has_data';
+              let className = '';
+              if (d.barData[1] === 1) {
+                className = 'rect_has_data';
+              } else {
+                className = 'rect_has_no_data';
               }
-              return 'rect_has_no_data';
+              // Add dimmed class if the task is dimmed
+              if (d.isDimmed) {
+                className += ' rect_dimmed';
+              }
+              return className;
             })
             .on('mouseover', function (d) {
               const matrix = this.getScreenCTM().translate(
@@ -384,7 +572,7 @@ export default {
               div
                 .html(function () {
                   let output = '';
-                  if (d[1] === 1) {
+                  if (d.barData[1] === 1) {
                     output =
                       '<i class="fa fa-fw fa-check taskTooltip_has_data"></i>';
                   } else {
@@ -392,32 +580,32 @@ export default {
                       '<i class="fa fa-fw fa-times taskTooltip_has_no_data"></i>';
                   }
                   if (isDateOnlyFormat) {
-                    if (d[2] > d3.time.second.offset(d[0], 86400)) {
+                    if (d.barData[2] > d3.time.second.offset(d.barData[0], 86400)) {
                       output =
                         output +
-                        moment(parseDate(d[0])).format('l') +
+                        moment(parseDate(d.barData[0])).format('l') +
                         ' - ' +
-                        moment(parseDate(d[2])).format('l');
+                        moment(parseDate(d.barData[2])).format('l');
                     } else {
-                      output = output + moment(parseDate(d[0])).format('l');
+                      output = output + moment(parseDate(d.barData[0])).format('l');
                     }
                   } else {
-                    if (d[2] > d3.time.second.offset(d[0], 86400)) {
+                    if (d.barData[2] > d3.time.second.offset(d.barData[0], 86400)) {
                       output =
                         output +
-                        moment(parseDateTime(d[0])).format('l') +
+                        moment(parseDateTime(d.barData[0])).format('l') +
                         ' ' +
-                        moment(parseDateTime(d[0])).format('LTS') +
+                        moment(parseDateTime(d.barData[0])).format('LTS') +
                         ' - ' +
-                        moment(parseDateTime(d[2])).format('l') +
+                        moment(parseDateTime(d.barData[2])).format('l') +
                         ' ' +
-                        moment(parseDateTime(d[2])).format('LTS');
+                        moment(parseDateTime(d.barData[2])).format('LTS');
                     } else {
                       output =
                         output +
-                        moment(parseDateTime(d[0])).format('LTS') +
+                        moment(parseDateTime(d.barData[0])).format('LTS') +
                         ' - ' +
-                        moment(parseDateTime(d[2])).format('LTS');
+                        moment(parseDateTime(d.barData[2])).format('LTS');
                     }
                   }
                   return output;
@@ -535,6 +723,61 @@ export default {
               .attr('class', 'heading');
           }
 
+          // Check if there are any tasks with children
+          const hasTasksWithChildren = dataset.some((d) => d.hasChildren);
+
+          // Create expand/collapse all button
+          if (hasTasksWithChildren) {
+            // Check current expansion state - all expanded if all child-bearing tasks are expanded
+            const allExpanded = dataset
+              .filter((d) => d.hasChildren)
+              .every((d) => d.isExpanded);
+
+            const expandAllButton = svg
+              .select('#g_title')
+              .append('g')
+              .attr('class', 'expand-all-button')
+              .attr('cursor', 'pointer')
+              .attr(
+                'transform',
+                'translate(' +
+                  paddingLeft +
+                  ',' +
+                  (paddingTopHeading - 20) +
+                  ')',
+              );
+
+            expandAllButton
+              .append('rect')
+              .attr('x', 0)
+              .attr('y', 0)
+              .attr('width', 80)
+              .attr('height', 20)
+              .attr('rx', 3)
+              .attr('fill', '#4b5563')
+              .attr('stroke', '#6b7280')
+              .attr('stroke-width', 1);
+
+            expandAllButton
+              .append('text')
+              .attr('x', 40)
+              .attr('y', 14)
+              .attr('text-anchor', 'middle')
+              .attr('fill', '#ffffff')
+              .attr('font-size', '12px')
+              .attr('font-weight', '500')
+              .text(allExpanded ? 'Collapse' : 'Expand');
+
+            expandAllButton.on('click', function () {
+              // Emit event to parent component
+              const event = new CustomEvent('toggle-expand-all', {
+                detail: { expandAll: !allExpanded },
+                bubbles: true,
+              });
+              this.dispatchEvent(event);
+            });
+          }
+
           // create subtitle
           let subtitleText = '';
           if (isDateOnlyFormat) {
@@ -553,13 +796,28 @@ export default {
               moment(parseDateTime(endDate)).format('LTS');
           }
 
-          svg
+          const subheadingText = svg
             .select('#g_title')
             .append('text')
             .attr('x', paddingLeft)
             .attr('y', paddingTopHeading + 17)
             .text(subtitleText)
             .attr('class', 'subheading');
+
+          // Add metadata info on a separate line below the time text
+          if (metadata && metadata.trim()) {
+            svg
+              .select('#g_title')
+              .append('text')
+              .attr('class', 'metadata-info')
+              .attr('x', paddingLeft)
+              .attr('y', paddingTopHeading + 30) // 13px below the time text
+              .text(metadata)
+              .attr('font-size', '11px')
+              .attr('fill', '#374151')
+              .attr('font-weight', '500')
+              .attr('font-family', 'system-ui, -apple-system, sans-serif');
+          }
 
           // create legend
           const legend = svg
@@ -691,6 +949,11 @@ export default {
     @apply fill-current text-red-700;
   }
 
+  .rect_dimmed {
+    /* dimmed bars for non-matching ancestors */
+    opacity: 0.3;
+  }
+
   .taskTooltip_has_data {
     /* color of symbol in taskTooltip if there is data */
     @apply text-green-600;
@@ -725,6 +988,40 @@ export default {
     @apply font-lead;
     -moz-osx-font-smoothing: grayscale;
     font-size: 12px;
+  }
+
+  .ytitle-dimmed {
+    /* dimmed labels for non-matching ancestors */
+    opacity: 0.5;
+  }
+
+  .ytitle-highlighted {
+    /* highlighted labels that match the search filter */
+    @apply bg-gray-200;
+    padding: 2px 4px;
+    border-radius: 2px;
+  }
+
+  .tree-guideline {
+    /* vertical guidelines for tree structure */
+    stroke: var(--color-border-muted, #d1d5db);
+    stroke-width: 1px;
+  }
+
+  .tree-connector {
+    /* horizontal connectors for tree structure */
+    stroke: var(--color-border-muted, #d1d5db);
+    stroke-width: 1px;
+  }
+
+  .tree-toggle {
+    /* expand/collapse toggle button */
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .tree-toggle:hover {
+    fill: #374151;
   }
 
   .axis path,
